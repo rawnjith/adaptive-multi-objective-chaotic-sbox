@@ -41,4 +41,4 @@ python -m pytest deposit_sim_regressions.py -q
 This is a simulation study of an S-box permutation, not a complete cipher evaluation. No key schedule/diffusion construction was specified, so NPCR/UACI are omitted. No MCU runtime, energy, or side-channel measurements are included. Five seed pairs are exploratory and do not establish FPA superiority or equivalence. The selected solutions include near-zero coupling; comparison with a one-dimensional generator remains future work.
 
 ## Public archive status
-This release has not yet been pushed to GitHub or archived in Zenodo; no DOI is available yet. After publication, add the GitHub repository address and DOI here and update the manuscript Data Availability statement. Do not submit a DOI placeholder.
+This release is publicly available at https://github.com/rawnjith/adaptive-multi-objective-chaotic-sbox (commit `7fd631f`). A Zenodo DOI has not yet been issued. Once the GitHub repository is connected to Zenodo and a release is archived, add that DOI here and cite it in the manuscript if required by the journal.
