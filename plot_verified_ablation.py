@@ -1,5 +1,5 @@
+import itertools
 import json
-import os
 from pathlib import Path
 
 import matplotlib
@@ -7,9 +7,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("SBOX_RESULTS_DIR", HERE / "results"))
-OUT = Path(os.environ.get("SBOX_FIGURE_OUT", HERE / "figures" / "fig_08_paired_ablation.pdf"))
+ROOT = Path(__file__).resolve().parents[1]
+DATA_DIR = Path(__import__("os").environ.get("SBOX_RESULTS_DIR", ROOT / "results"))
+OUT = Path(__import__("os").environ.get("SBOX_FIGURE_OUT", ROOT / "figures" / "fig_08_paired_ablation.pdf"))
 SEEDS = [42, 100, 1234, 2025, 7777]
 METRIC = "nl_min"
 

@@ -36,7 +36,7 @@ def test_map_step_is_simultaneous_modulo_one():
 
 
 def test_seed_no_fpa_cli_records_config():
-    with patch.object(sim.argparse.ArgumentParser,"parse_args",return_value=Namespace(seed=17,no_fpa=True,pop_size=4,generations=1,fpa_interval=1,output="tiny.json",figures=False)):
+    with patch.object(sim.argparse.ArgumentParser,"parse_args",return_value=Namespace(seed=17,no_fpa=True,pop_size=4,generations=1,fpa_interval=1,output="tiny.json")):
         with patch.object(sim,"main") as run: sim.cli_main()
     assert run.call_args.kwargs["seed"]==17 and run.call_args.kwargs["fpa_enabled"] is False
 

@@ -1,8 +1,9 @@
-"""Reproducible NSGA-II/FPA study for a map-driven 8-bit S-box.
+"""NSGA-II-FPA / 2D-Logistic S-box simulator — honest, reproducible.
 
-Run with --seed, optionally --no-fpa, and --output to write one run's
-JSON record. Figures can be disabled with --no-figures. See README.md
-for the paired seed protocol and analysis workflow.
+Seed = 20260814.
+Outputs:
+  figures/*.pdf           publication-grade figures
+  results.json            full Pareto front + selected S-box + metrics
 """
 from __future__ import annotations
 
@@ -649,14 +650,13 @@ def cli_main():
     parser.add_argument("--generations", type=int, default=20)
     parser.add_argument("--fpa-interval", type=int, default=3)
     parser.add_argument("--output", type=str, default=None)
-    parser.add_argument("--figures", action="store_true", help="generate single-run figures")
     args = parser.parse_args()
     if args.output is None:
         suffix = "nsga_only" if args.no_fpa else "fpa"
         args.output = f"results_{suffix}_seed{args.seed}.json"
     main(seed=args.seed, fpa_enabled=not args.no_fpa, pop_size=args.pop_size,
          n_gen=args.generations, fpa_interval=args.fpa_interval,
-         output_path=args.output, generate_figures=args.figures)
+         output_path=args.output)
 
 
 if __name__ == "__main__":
