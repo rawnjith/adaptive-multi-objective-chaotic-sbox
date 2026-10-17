@@ -12,15 +12,27 @@
 ## Environment and configuration
 Verified with Python 3.12.3, NumPy 1.26.4, Matplotlib 3.10.8, SciPy 1.14.1. Runs use population 80, 20 generations, per-gene crossover probability 0.5, Gaussian mutation SD 0.01. Search genes are phase variables p_x,p_y in [0,1), mapped to map states x0=sin²(πp_x), y0=sin²(πp_y); mu is in [3.57,4.0), gamma in [0,0.5). FPA is applied every three generations to at most ten members of the first nondominated front. Seeds are paired across variants: 42, 100, 1234, 2025, 7777.
 
-## Reproduce runs
-Run from this directory. For each seed, replace `SEED` with one of `42`, `100`, `1234`, `2025`, `7777`:
+## Reproduce the paired runs
+Run from this directory. PowerShell:
 
-```sh
-python sim.py --seed SEED --output results/depositfinal_fpa_seedSEED.json
-python sim.py --seed SEED --no-fpa --output results/depositfinal_nsga_only_seedSEED.json
+```powershell
+$seeds = 42, 100, 1234, 2025, 7777
+foreach ($seed in $seeds) {
+  python sim.py --seed $seed --output "results/depositfinal_fpa_seed$seed.json"
+  python sim.py --seed $seed --no-fpa --output "results/depositfinal_nsga_only_seed$seed.json"
+}
 ```
 
-Omit `--figures` for run-only regeneration. Add `--figures` to generate the single-run figures under `figures/`.
+POSIX shell:
+
+```sh
+for seed in 42 100 1234 2025 7777; do
+  python sim.py --seed "$seed" --output "results/depositfinal_fpa_seed${seed}.json"
+  python sim.py --seed "$seed" --no-fpa --output "results/depositfinal_nsga_only_seed${seed}.json"
+done
+```
+
+These commands regenerate run-only JSONs. Add `--figures` to one command to generate the single-run figures under `figures/`.
 
 ## Reproduce analysis and paired figure
 
