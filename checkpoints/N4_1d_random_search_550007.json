@@ -1,0 +1,29 @@
+{
+  "node_id": "N4:1d_random_search:550007",
+  "status": "complete",
+  "inputs": {
+    "method": "1d_random_search",
+    "seed": 550007,
+    "evaluation_budget": 940,
+    "protocol_hash": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator_hash": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "input_sha256": {
+    "protocol": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "outputs": [
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\results\\seed_1d_random_search_550007.json",
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\logs\\seed_1d_random_search_550007.jsonl"
+  ],
+  "output_sha256": {
+    "result": "ede44e2f59048968f9aed464e0066ef4de3b2677bd4aa16c0be61b27d8326f5f",
+    "log": "bf94f6601f0b9836ae38fd78c7e83b95b59cb53e0338fad55cf13ec2bc58f47f"
+  },
+  "started_at": 1792480085.2211227,
+  "finished_at": 1792480113.917446,
+  "command": "execute_run_node",
+  "evaluation_count": 940,
+  "exit_status": 0,
+  "retry": 0
+}

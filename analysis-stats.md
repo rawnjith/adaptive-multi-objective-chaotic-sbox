@@ -1,32 +1,28 @@
-# Results / Statistics Appendix — authoritative paired_statistics.json
+# Statistical summary — corrected 30-seed revision
 
-## Experimental design
-Paired NSGA-II versus NSGA-II + periodic FPA runs. Both variants use seeds 42, 100, 1234, 2025, 7777; population 80; 20 generations; Gaussian mutation SD 0.01; phase genes `p_x,p_y∈[0,1)` mapped by `x0=sin²(πp_x)`, `y0=sin²(πp_y)`; `mu∈[3.57,4.0)`, `gamma∈[0,0.5)`. FPA perturbation affects up to ten members from the first nondominated front every three generations. The authoritative outputs are `output/reproducibility-deposit/results/depositfinal_{fpa,nsga_only}_seedN.json`.
+The authoritative analysis is `output/sbox-revision/2026-10-19-inventory-01/analysis/analysis_revision.py`, whose inputs are the immutable valid files under `run-v3/results/`. The frozen run grid completed 30 seeds × five methods (150 cells), each at exactly 940 objective evaluations. Each seed is one unit of analysis; the 940 random permutations inside a seed are nested descriptive samples and are not treated as independent runs.
 
-## Descriptive and paired results
-Values are mean (sample SD), n=5. Delta = FPA minus NSGA-II-only. Percentile bootstrap CI is from 100,000 resamples of five paired differences using NumPy Generator seed 20261007. The test is an exact two-sided paired sign-flip test over 32 sign assignments; Holm correction is across six endpoints.
+## Selected outcomes (mean, sample SD; n=30)
 
-| Metric | FPA mean (SD) | NSGA-II-only mean (SD) | Paired delta | Bootstrap 95% CI | Exact p | Holm p |
-|---|---:|---:|---:|---:|---:|---:|
-| LE | 0.672463 (0.002947) | 0.675409 (0.007806) | -0.002947 | [-0.008543, 0.003321] | 0.4375 | 1.000 |
-| NLmin | 101.6 (0.894) | 102.4 (0.894) | -0.8 | [-1.6, 0.0] | 0.5000 | 1.000 |
-| SAC | 0.500635 (0.003447) | 0.498242 (0.003991) | 0.002393 | [-0.001074, 0.006055] | 0.3750 | 1.000 |
-| BIC-SAC deviation | 0.034180 (0.000789) | 0.034849 (0.001615) | -0.000670 | [-0.001995, 0.000656] | 0.4375 | 1.000 |
-| DU | 10.0 (0.0) | 10.0 (0.0) | 0.0 | [0.0, 0.0] | 1.0000 | 1.000 |
-| LAP probability bias | 0.142188 (0.006536) | 0.135938 (0.008908) | 0.006250 | [-0.004688, 0.017188] | 0.5000 | 1.000 |
+| Method | LE | Vectorial NL_min | DU | SAC | BIC-SAC deviation | LAP bias | Hypervolume |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| NSGA-II-only | 0.678827 (0.006804) | 95.333 (1.322) | 10.000 (0) | 0.502686 (0.004565) | 0.035477 (0.002134) | 0.127604 (0.005163) | 0.722917 (0.006259) |
+| NSGA-II + FPA | 0.674967 (0.004968) | 95.733 (0.868) | 10.067 (0.365) | 0.502726 (0.005217) | 0.035131 (0.001751) | 0.126042 (0.003392) | 0.724905 (0.004541) |
+| 2D parameter random search | 0.662293 (0.013124) | 95.400 (1.404) | 10.133 (0.507) | 0.499788 (0.004811) | 0.035598 (0.001623) | 0.127344 (0.005486) | 0.718932 (0.006896) |
+| 1D Logistic-map random search | 0.662846 (0.017624) | 95.000 (1.145) | 10.067 (0.365) | 0.501278 (0.004653) | 0.035152 (0.001415) | 0.128906 (0.004471) | 0.716873 (0.005934) |
 
-No Holm-adjusted test supports a difference. Five pairs are underpowered; the tests do not show equivalence. The manuscript makes no FPA superiority claim.
+## Primary paired contrast: FPA minus NSGA-II-only
 
-Final nondominated-front sizes are FPA [6,7,7,4,6] (mean 6.0) and NSGA-II-only [4,5,3,6,4] (mean 4.4). This count is descriptive only and is not a measure of front quality. The ten selected gamma values span approximately 0.00045 to 0.49159; the selected solutions include near-zero coupling, so 1D-versus-2D comparison remains important.
+| Metric | Mean difference | Paired bootstrap 95% CI | Exact sign-flip p | Holm-adjusted p | Cohen dz |
+|---|---:|---:|---:|---:|---:|
+| LE | -0.003860 | [-0.006803, -0.000855] | 0.019117 | 0.057352 | -0.4565 |
+| Vectorial NL_min | +0.400 | [-0.133, +1.000] | 0.280273 | 0.560547 | +0.2484 |
+| DU | +0.0667 | [0.000, +0.200] | 1.000000 | 1.000000 | +0.1826 |
 
-## Implementation corrections
-- Benettin tangent-vector LE computation now accumulates `log(norm)` before renormalization; uncoupled mu=4 sanity estimate approaches `ln(2)`.
-- The modulo-one coupled map uses simultaneous old-state updates consistently in trajectory generation, LE estimation, and Fisher–Yates key generation.
-- Optimizer phase genes map to valid initial states through `sin²(πp)`; phase, mu, and gamma genes wrap periodically.
-- Seed and no-FPA CLI behavior fixed and provenance records variant and seed.
-- Parent selection uses binary tournament by NSGA-II rank then crowding; FPA perturbation acts only on the first nondominated front.
-- Fitness has three independent objectives (LE, NLmin, DU); runtime proxy removed. LAP now returns probability bias, not absolute correlation.
-- AES S-box generated and checked against the known first four entries, permutation property, NLmin=112, DU=4, and LAP=0.0625.
+LE is maximized, so the negative FPA contrast is directionally worse; DU is minimized, so the positive contrast is directionally worse. No primary endpoint has Holm-adjusted p < 0.05. Nonsignificance is not evidence of equivalence.
 
-## Limits and external blockers
-No complete cipher/key schedule is specified, so NPCR/UACI are omitted. No physical MCU time/energy/side-channel data exist. No matched baselines other than AES 8-bit are included; the AES row is not a cipher-security comparison. A full archive-quality metric, larger-seed study, and 1D baseline remain future work. Local code/data release is ready but has no public DOI; the Data Availability statement must be replaced after deposit. Full visual PDF inspection and final response-letter reconciliation remain necessary.
+## Analysis procedures and limits
+
+Intervals are 95% percentile bootstrap intervals over seed-level means or paired differences, using 100,000 resamples with NumPy Generator seed 20261019 (metric-specific deterministic offsets for paired contrasts). The primary paired test is a two-sided exact sign-flip test enumerating all 2^30 assignments using meet-in-the-middle; Holm correction covers the prespecified LE/NL_min/DU family. Hypervolume is reported descriptively under the fixed transforms/reference in `protocol.md`, without a confirmatory test.
+
+Random-search and 1D comparisons are descriptive, not confirmatory matched tests. The random-permutation reference averages 940 permutations within each seed (28,200 total), but seeds—not individual nested permutations—are the independent units. The study is one fixed protocol on a constrained generator family; it establishes neither optimizer superiority nor a coupling mechanism benefit. It contains no complete cipher, hardware, runtime/energy, side-channel, or deployment evaluation. The like-for-like comparison requested with recent chaotic S-box designs (review comment 7(b)) remains unperformed and is acknowledged in the response.

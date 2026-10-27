@@ -1,0 +1,29 @@
+{
+  "node_id": "N4:random_permutation_reference:700001",
+  "status": "complete",
+  "inputs": {
+    "method": "random_permutation_reference",
+    "seed": 700001,
+    "evaluation_budget": 940,
+    "protocol_hash": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator_hash": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "input_sha256": {
+    "protocol": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "outputs": [
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\results\\seed_random_permutation_reference_700001.json",
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\logs\\seed_random_permutation_reference_700001.jsonl"
+  ],
+  "output_sha256": {
+    "result": "faef594dd87821de379e70967710e8412f5935cb6ffb77918a3c34192e540642",
+    "log": "ad974b63c0787d5c2c901fed43e2ab02331b8ba08de8ed4de8470a52a4547b8c"
+  },
+  "started_at": 1792480690.7913768,
+  "finished_at": 1792480711.1764839,
+  "command": "execute_run_node",
+  "evaluation_count": 940,
+  "exit_status": 0,
+  "retry": 0
+}

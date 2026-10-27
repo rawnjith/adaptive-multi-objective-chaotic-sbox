@@ -8,8 +8,12 @@ Outputs:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import math
+import shutil
 import time
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -79,6 +83,20 @@ def iterate_2d_logistic(x0, y0, mu, gamma, n, transient=200):
     return x, y
 
 
+def lyapunov_1d_logistic(x0, mu, n=1500, transient=200):
+    """Estimate the largest Lyapunov exponent for the 1D logistic recurrence."""
+    x = float(x0)
+    total = 0.0
+    for index in range(n + transient):
+        derivative = abs(float(mu) * (1.0 - 2.0 * x))
+        if derivative <= np.finfo(float).tiny:
+            return float("-inf")
+        x = (mu * x * (1.0 - x)) % 1.0
+        if index >= transient:
+            total += np.log(derivative)
+    return float(total / n)
+
+
 def lyapunov_2d_logistic(x0, y0, mu, gamma, n=1500, transient=200):
     """Estimate the largest Lyapunov exponent using a unit tangent vector."""
     le_sum = 0.0
@@ -130,6 +148,19 @@ def map_to_sbox(x0, y0, mu, gamma, transient=500, target_len=256):
         elif j > i:
             j = i
         perm[i], perm[j] = perm[j], perm[i]
+    return perm
+
+
+def map_to_sbox_1d(phase_x, mu, transient=500, target_len=256):
+    """Construct a permutation from a 1D map using the shared phase-gene transform."""
+    perm = np.arange(target_len, dtype=np.int64)
+    x = float(np.sin(np.pi * phase_x) ** 2)
+    for _ in range(transient):
+        x = (mu * x * (1 - x)) % 1.0
+    for index in range(target_len - 1, 0, -1):
+        x = (mu * x * (1 - x)) % 1.0
+        swap_index = int(np.floor(x * (index + 1)))
+        perm[index], perm[swap_index] = perm[swap_index], perm[index]
     return perm
 
 
@@ -187,13 +218,153 @@ def walsh_hadamard(f):
     return h
 
 
-def nonlinearity(sbox):
-    nls = []
+def _validated_sbox(sbox):
+    values = np.asarray(sbox)
+    if values.shape != (256,) or not np.issubdtype(values.dtype, np.integer):
+        raise ValueError("an 8-bit S-box must contain 256 integer outputs")
+    if np.any(values < 0) or np.any(values > 255) or np.unique(values).size != 256:
+        raise ValueError("an 8-bit S-box must be a permutation of 0..255")
+    return values.astype(np.int64, copy=False)
+
+
+def _component_spectra(sbox, masks):
+    components = np.zeros((len(masks), 256), dtype=np.int64)
     for bit in range(8):
-        f = ((sbox >> bit) & 1).astype(np.int64) * 2 - 1
-        wh = np.abs(walsh_hadamard(f))
-        nls.append(128 - wh.max() // 2)
-    return int(np.min(nls)), float(np.mean(nls))
+        selected = np.array([(mask >> bit) & 1 for mask in masks], dtype=bool)
+        if np.any(selected):
+            components[selected] ^= ((sbox >> bit) & 1)
+    spectra = 1 - 2 * components
+    width = 1
+    while width < 256:
+        blocks = spectra.reshape(len(masks), -1, 2, width)
+        left = blocks[:, :, 0, :].copy()
+        right = blocks[:, :, 1, :].copy()
+        blocks[:, :, 0, :] = left + right
+        blocks[:, :, 1, :] = left - right
+        width *= 2
+    return spectra
+
+
+def component_nonlinearity(sbox, output_mask):
+    """Return the Boolean nonlinearity of the component output_mask · S(x)."""
+    values = _validated_sbox(sbox)
+    if not isinstance(output_mask, (int, np.integer)) or not 1 <= output_mask <= 255:
+        raise ValueError("output_mask must be an integer in 1..255")
+    spectrum = np.abs(_component_spectra(values, [int(output_mask)]))
+    return 128 - int(spectrum.max()) // 2
+
+
+def vectorial_nonlinearity(sbox):
+    """Return minimum component nonlinearity over all 255 nonzero output masks."""
+    values = _validated_sbox(sbox)
+    spectra = np.abs(_component_spectra(values, range(1, 256)))
+    component_maxima = spectra.max(axis=1)
+    return int(np.min(128 - component_maxima // 2))
+
+
+def random_permutation_sample(seed, count):
+    """Return seeded uniform random permutations as a descriptive reference."""
+    rng = np.random.default_rng(seed)
+    return [rng.permutation(256) for _ in range(count)]
+
+
+def random_parameter_candidates(seed, budget):
+    """Return a seeded uniform sample of valid 2D-map generator parameters."""
+    rng = np.random.default_rng(seed)
+    candidates = []
+    for _ in range(budget):
+        candidates.append((
+            float(rng.uniform(0.0, 1.0)),
+            float(rng.uniform(0.0, 1.0)),
+            float(rng.uniform(3.57, 4.0)),
+            float(rng.uniform(0.0, 0.5)),
+        ))
+    return candidates
+
+
+def normalize_objectives(candidate):
+    """Map objectives monotonically into fixed [0,1) minimization coordinates."""
+    le = float(candidate["le"])
+    nl = float(candidate["nl_min"])
+    du = float(candidate["du"])
+    if not np.isfinite(le) or not np.isfinite(nl) or not np.isfinite(du):
+        raise ValueError("objective values must be finite")
+    return (0.5 - np.arctan(le) / np.pi, (128.0 - nl) / 128.0, du / 256.0)
+
+
+def exact_sign_flip_pvalue(differences, tolerance=1e-12):
+    """Compute an exact two-sided paired sign-flip p-value by meet-in-the-middle."""
+    values = np.asarray(differences, dtype=float)
+    if values.ndim != 1 or values.size == 0 or not np.all(np.isfinite(values)):
+        raise ValueError("differences must be a non-empty finite one-dimensional array")
+    split = values.size // 2
+    left = values[:split]
+    right = values[split:]
+
+    def signed_sums(part):
+        sums = np.array([0.0])
+        for value in part:
+            sums = np.concatenate((sums + value, sums - value))
+        return sums
+
+    left_sums = signed_sums(left)
+    right_sums = np.sort(signed_sums(right))
+    observed = abs(float(values.sum()))
+    threshold = observed - tolerance
+    if threshold <= 0:
+        return 1.0
+    total = 0
+    for left_sum in left_sums:
+        lower_count = np.searchsorted(right_sums, -threshold - left_sum, side="right")
+        upper_count = right_sums.size - np.searchsorted(right_sums, threshold - left_sum, side="left")
+        total += lower_count + upper_count
+    return float(total / (2 ** values.size))
+
+
+def hypervolume_3d(front, reference_point):
+    """Compute exact minimization hypervolume for a 3D front and fixed reference."""
+    points = np.asarray(front, dtype=float)
+    reference = np.asarray(reference_point, dtype=float)
+    if points.ndim != 2 or points.shape[1] != 3 or reference.shape != (3,):
+        raise ValueError("front and reference_point must be 3-dimensional")
+    if not np.all(np.isfinite(points)) or not np.all(np.isfinite(reference)):
+        raise ValueError("front and reference_point must contain finite coordinates")
+    if np.any(points >= reference):
+        raise ValueError("reference_point must be strictly worse than every front point")
+    nondominated = []
+    for point in points:
+        if not any(np.all(other <= point) and np.any(other < point) for other in points):
+            nondominated.append(point)
+    xs = sorted({float(p[0]) for p in nondominated} | {float(reference[0])})
+    volume = 0.0
+    for left, right in zip(xs[:-1], xs[1:]):
+        active = [p[1:] for p in nondominated if p[0] <= left]
+        if active:
+            volume += (right - left) * _hypervolume_2d(active, reference[1:])
+    return float(volume)
+
+
+def _hypervolume_2d(points, reference):
+    points = np.asarray(points, dtype=float)
+    ys = sorted({float(p[0]) for p in points} | {float(reference[0])})
+    area = 0.0
+    for low, high in zip(ys[:-1], ys[1:]):
+        active_z = [p[1] for p in points if p[0] <= low]
+        if active_z:
+            area += (high - low) * (reference[1] - min(active_z))
+    return float(area)
+
+
+def coordinate_nonlinearity(sbox):
+    """Return coordinate-function NL minimum and mean as diagnostic values."""
+    values = _validated_sbox(sbox)
+    nls = [component_nonlinearity(values, 1 << bit) for bit in range(8)]
+    return int(min(nls)), float(np.mean(nls))
+
+
+def nonlinearity(sbox):
+    """Return minimum and mean coordinate-function nonlinearity."""
+    return coordinate_nonlinearity(sbox)
 
 
 def sac_matrix(sbox):
@@ -312,11 +483,16 @@ def objective_keys():
     return ("le", "nl_min", "du")
 
 
+def objective_vector(candidate):
+    """Map one candidate to the ordered minimization vector used by NSGA-II."""
+    return (-float(candidate["le"]), -float(candidate["nl_min"]), float(candidate["du"]))
+
+
 def select_knee(front):
     """Select the normalized Euclidean-distance-to-ideal compromise point."""
     if not front:
         raise ValueError("Cannot select a compromise from an empty Pareto front")
-    values = np.array([[p["le"], p["nl_min"], -p["du"]] for p in front], dtype=float)
+    values = -np.array([objective_vector(candidate) for candidate in front], dtype=float)
     low = values.min(axis=0)
     span = values.max(axis=0) - low
     normalized = np.divide(values - low, span, out=np.zeros_like(values), where=span > 0)
@@ -325,11 +501,12 @@ def select_knee(front):
 
 
 def dominates(a, b):
-    # Maximize LE and NL; minimize DU. No independent hardware timing
-    # measurements are available for a runtime objective.
-    a_v = (-a["le"], -a["nl_min"], a["du"])
-    b_v = (-b["le"], -b["nl_min"], b["du"])
-    return all(av <= bv for av, bv in zip(a_v, b_v)) and any(av < bv for av, bv in zip(a_v, b_v))
+    """Return whether candidate a is no worse on every objective and better on one."""
+    a_values = objective_vector(a)
+    b_values = objective_vector(b)
+    return all(av <= bv for av, bv in zip(a_values, b_values)) and any(
+        av < bv for av, bv in zip(a_values, b_values)
+    )
 
 
 def fast_non_dominated_sort(pop):
@@ -378,18 +555,401 @@ def crowding_distance(pop, front):
     if n == 0:
         return {}
     dist = {i: 0.0 for i in front}
-    keys = [("le", -1), ("nl_min", -1), ("du", 1)]
-    for k, sgn in keys:
-        sf = sorted(front, key=lambda i: sgn * pop[i][k])
+    values = np.asarray([objective_vector(pop[index]) for index in front], dtype=float)
+    for column_index in range(values.shape[1]):
+        order = np.argsort(values[:, column_index])
+        sf = [front[index] for index in order]
         dist[sf[0]] = float("inf")
         dist[sf[-1]] = float("inf")
-        vmin = pop[sf[0]][k]
-        vmax = pop[sf[-1]][k]
+        vmin = values[order[0], column_index]
+        vmax = values[order[-1], column_index]
         if vmax == vmin:
             continue
-        for i in range(1, n - 1):
-            dist[sf[i]] += (pop[sf[i+1]][k] - pop[sf[i-1]][k]) / (vmax - vmin)
+        for position in range(1, n - 1):
+            before = values[order[position - 1], column_index]
+            after = values[order[position + 1], column_index]
+            dist[sf[position]] += (after - before) / (vmax - vmin)
     return dist
+
+
+def _evaluate_1d_candidate(phase_x, mu):
+    x0 = float(np.sin(np.pi * phase_x) ** 2)
+    sbox = map_to_sbox_1d(phase_x, mu)
+    return {
+        "phase_x": float(phase_x), "phase_y": 0.0, "x0": x0, "y0": 0.0,
+        "mu": float(mu), "gamma": 0.0,
+        "le": lyapunov_1d_logistic(x0, mu, n=1500, transient=200),
+        "nl_min": vectorial_nonlinearity(sbox),
+        "nl_avg": coordinate_nonlinearity(sbox)[1],
+        "sac": sac(sbox), "bic_sac": bic_sac(sbox),
+        "du": differential_uniformity(sbox), "lap": lap(sbox),
+        "entropy": shannon_entropy_bits(sbox), "sbox": sbox.tolist(),
+    }
+
+
+def _canonical_config_hash(config):
+    return hashlib.sha256(json.dumps(config, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _result_record(candidate, variant, seed, config_hash):
+    return {
+        **candidate,
+        "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks",
+        "variant": variant,
+        "seed": int(seed),
+        "config_hash": config_hash,
+        "objective_values": list(objective_vector(candidate)),
+        "normalized_objectives": list(normalize_objectives(candidate)),
+    }
+
+
+def _build_run_result(evaluations, variant, seed, config, evaluation_count):
+    if not evaluations:
+        raise ValueError("at least one candidate evaluation is required")
+    if evaluation_count != len(evaluations):
+        raise ValueError("evaluation_count must equal the number of evaluated candidates")
+    if evaluation_count != int(config.get("evaluation_budget", evaluation_count)):
+        raise ValueError("run did not consume the configured exact evaluation budget")
+    fronts = fast_non_dominated_sort(evaluations)
+    front = [evaluations[index] for index in fronts[0]]
+    selected = front[select_knee(front)]
+    config_hash = _canonical_config_hash(config)
+    records = [_result_record(candidate, variant, seed, config_hash) for candidate in evaluations]
+    front_records = [_result_record(candidate, variant, seed, config_hash) for candidate in front]
+    return {
+        "provenance": {"simulated": True, "seed": int(seed), "fpa_enabled": variant == "fpa",
+                       "notes": "Algorithm-generated simulation; not hardware or full-cipher measurement."},
+        "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks",
+        "evaluation_count": int(evaluation_count), "seed": int(seed), "variant": variant,
+        "config_hash": config_hash, "objective_values": list(objective_vector(selected)),
+        "normalized_objectives": list(normalize_objectives(selected)),
+        "initial_population": config.get("initial_population_records"),
+        "hypervolume": hypervolume_3d(
+            [normalize_objectives(candidate) for candidate in front], [1.1, 1.1, 1.1]
+        ),
+        "selected": {key: value for key, value in selected.items() if key != "sbox"},
+        "sbox": selected["sbox"], "pareto_size": len(front),
+        "pareto": [{key: value for key, value in record.items() if key != "sbox"} for record in front_records],
+        "initial_selected": config.get("initial_selected_record"),
+        "initial_pareto_size": config.get("initial_pareto_size"),
+        "evaluations": records,
+        "initial_population": config.get("initial_population_records", []),
+        "initial_selected": config.get("initial_selected_record"),
+        "initial_pareto_size": config.get("initial_pareto_size"),
+        "pop_size": config.get("pop_size"),
+        "n_gen": config.get("n_gen"), "fpa_interval": config.get("fpa_interval"),
+        "evaluation_budget": config.get("evaluation_budget"),
+    }
+
+
+def run_optimizer(seed, fpa_enabled, pop_size, n_gen, fpa_interval, evaluation_budget, initial_population=None):
+    """Run NSGA-II with an exact objective-call budget; FPA calls consume budget."""
+    if pop_size < 2 or n_gen < 1 or evaluation_budget < pop_size:
+        raise ValueError("require pop_size >= 2, n_gen >= 1, and budget >= population size")
+    np.random.seed(int(seed))
+    variant = "fpa" if fpa_enabled else "nsga_only"
+    config = {"seed": int(seed), "variant": variant, "pop_size": int(pop_size),
+              "n_gen": int(n_gen), "fpa_interval": int(fpa_interval),
+              "evaluation_budget": int(evaluation_budget),
+              "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks",
+              "objective_keys": list(objective_keys())}
+    evaluated = []
+    initial_candidates = []
+    if initial_population is not None and len(initial_population) != pop_size:
+        raise ValueError("initial_population length must match pop_size")
+    for index in range(min(pop_size, evaluation_budget)):
+        if initial_population is None:
+            chromosome = [float(np.random.uniform(0, 1)), float(np.random.uniform(0, 1)),
+                          float(np.random.uniform(3.57, 4)), float(np.random.uniform(0, .5))]
+        else:
+            chromosome = list(initial_population[index])
+        candidate = evaluate_chromosome(chromosome)
+        candidate["generation"] = 0
+        initial_candidates.append(candidate)
+    evaluated.extend(initial_candidates)
+    if not evaluated:
+        raise ValueError("evaluation_budget must be positive")
+    calls = len(evaluated)
+    population = evaluated[:]
+    for generation in range(n_gen):
+        if calls >= evaluation_budget:
+            break
+        fronts = fast_non_dominated_sort(population)
+        ranks = [0] * len(population)
+        crowding = {}
+        for rank, front in enumerate(fronts):
+            for index in front:
+                ranks[index] = rank
+            crowding.update(crowding_distance(population, front))
+        if fpa_enabled and fpa_interval > 0 and (generation + 1) % fpa_interval == 0:
+            candidates = sorted(fronts[0], key=lambda index: -crowding.get(index, 0.0))[:10]
+            for index in candidates:
+                if calls >= evaluation_budget:
+                    break
+                updated = evaluate_chromosome(fpa_mutate(population, index))
+                updated["generation"] = generation
+                calls += 1
+                population[index] = updated
+                evaluated.append(updated)
+        offspring = []
+        target_offspring = min(pop_size // 2, evaluation_budget - calls)
+        while len(offspring) < target_offspring:
+            a1, a2 = np.random.choice(len(population), 2, replace=len(population) < 2)
+            b1, b2 = np.random.choice(len(population), 2, replace=len(population) < 2)
+            parent_a = population[tournament_winner(int(a1), int(a2), ranks, crowding)]
+            parent_b = population[tournament_winner(int(b1), int(b2), ranks, crowding)]
+            genes_a = [parent_a[key] for key in ("phase_x", "phase_y", "mu", "gamma")]
+            genes_b = [parent_b[key] for key in ("phase_x", "phase_y", "mu", "gamma")]
+            mask = np.random.random(4) > .5
+            child = [genes_a[i] if mask[i] else genes_b[i] for i in range(4)]
+            for gene in range(4):
+                child[gene] += np.random.normal(0, .01)
+            evaluated_child = evaluate_chromosome(wrap_parameters(child))
+            evaluated_child["generation"] = generation + 1
+            calls += 1
+            offspring.append(evaluated_child)
+            evaluated.append(evaluated_child)
+        combined = population + offspring
+        fronts = fast_non_dominated_sort(combined)
+        survivors = []
+        for front in fronts:
+            if len(survivors) + len(front) <= pop_size:
+                survivors.extend(combined[index] for index in front)
+            else:
+                distances = crowding_distance(combined, front)
+                order = sorted(front, key=lambda index: -distances.get(index, 0.0))
+                survivors.extend(combined[index] for index in order[:pop_size-len(survivors)])
+                break
+        population = survivors
+    while calls < evaluation_budget:
+        fronts = fast_non_dominated_sort(population)
+        ranks = [0] * len(population)
+        crowding = {}
+        for rank, front in enumerate(fronts):
+            for index in front:
+                ranks[index] = rank
+            crowding.update(crowding_distance(population, front))
+        a1, a2 = np.random.choice(len(population), 2, replace=len(population) < 2)
+        b1, b2 = np.random.choice(len(population), 2, replace=len(population) < 2)
+        parent_a = population[tournament_winner(int(a1), int(a2), ranks, crowding)]
+        parent_b = population[tournament_winner(int(b1), int(b2), ranks, crowding)]
+        genes_a = [parent_a[key] for key in ("phase_x", "phase_y", "mu", "gamma")]
+        genes_b = [parent_b[key] for key in ("phase_x", "phase_y", "mu", "gamma")]
+        mask = np.random.random(4) > .5
+        child = [genes_a[i] if mask[i] else genes_b[i] for i in range(4)]
+        for gene in range(4):
+            child[gene] += np.random.normal(0, .01)
+        candidate = evaluate_chromosome(wrap_parameters(child))
+        candidate["generation"] = n_gen
+        calls += 1
+        evaluated.append(candidate)
+        combined = population + [candidate]
+        fronts = fast_non_dominated_sort(combined)
+        survivors = []
+        for front in fronts:
+            if len(survivors) + len(front) <= pop_size:
+                survivors.extend(combined[index] for index in front)
+            else:
+                distances = crowding_distance(combined, front)
+                order = sorted(front, key=lambda index: -distances.get(index, 0.0))
+                survivors.extend(combined[index] for index in order[:pop_size-len(survivors)])
+                break
+        population = survivors
+    config["initial_population_records"] = [
+        _result_record(candidate, variant, seed, _canonical_config_hash(config))
+        for candidate in initial_candidates
+    ]
+    result = _build_run_result(evaluated, variant, seed, config, calls)
+    initial_front = fast_non_dominated_sort(initial_candidates)[0]
+    initial_pareto = [initial_candidates[index] for index in initial_front]
+    initial_selected = initial_pareto[select_knee(initial_pareto)]
+    config["initial_selected_record"] = _result_record(initial_selected, variant, seed, result["config_hash"])
+    config["initial_pareto_size"] = len(initial_pareto)
+    result["initial_selected"] = config["initial_selected_record"]
+    result["initial_pareto_size"] = len(initial_pareto)
+    result["initial_population"] = [
+        _result_record(candidate, variant, seed, result["config_hash"])
+        for candidate in initial_candidates
+    ]
+    result["initial_selected"] = _result_record(initial_selected, variant, seed, result["config_hash"])
+    result["initial_pareto_size"] = len(initial_pareto)
+    config["initial_population_records"] = result["initial_population"]
+    config["initial_selected_record"] = result["initial_selected"]
+    config["initial_pareto_size"] = result["initial_pareto_size"]
+    return result
+
+
+def _write_json_atomic(path, payload):
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    temporary.replace(destination)
+
+
+def execute_run_node(run_root, method, seed, protocol_hash, evaluation_budget=940, retry=0):
+    """Run one attempt of a frozen-protocol method/seed cell."""
+    if retry not in (0, 1):
+        raise ValueError("retry must be zero or one")
+    if protocol_hash != _file_sha256(Path(run_root) / "protocol.md"):
+        raise ValueError("protocol hash does not match frozen protocol file")
+    run_root = Path(run_root)
+    run_root.mkdir(parents=True, exist_ok=True)
+    protocol_copy = run_root / "protocol.md"
+    if not protocol_copy.exists():
+        raise FileNotFoundError(f"frozen protocol copy is missing: {protocol_copy}")
+    suffix = "" if retry == 0 else "_retry1"
+    result_path = run_root / "results" / f"seed_{method}_{seed}{suffix}.json"
+    log_path = run_root / "logs" / f"seed_{method}_{seed}{suffix}.jsonl"
+    node_path = run_root / "checkpoints" / f"N4_{method}_{seed}{suffix}.json"
+    run_root.joinpath("results").mkdir(parents=True, exist_ok=True)
+    run_root.joinpath("logs").mkdir(parents=True, exist_ok=True)
+    run_root.joinpath("checkpoints").mkdir(parents=True, exist_ok=True)
+    if result_path.exists() or node_path.exists():
+        raise FileExistsError(f"run node already exists: {result_path}")
+    source_hash = _file_sha256(Path(__file__))
+    config = {"method": method, "seed": int(seed), "evaluation_budget": int(evaluation_budget),
+              "protocol_hash": protocol_hash, "simulator_hash": source_hash}
+    config_hash = _canonical_config_hash(config)
+    node = {"node_id": f"N4:{method}:{seed}", "status": "running", "inputs": config,
+            "input_sha256": {"protocol": protocol_hash, "simulator": source_hash},
+            "outputs": [str(result_path), str(log_path)], "output_sha256": None,
+            "started_at": time.time(), "finished_at": None, "command": "execute_run_node",
+            "evaluation_count": 0, "exit_status": None, "retry": int(retry)}
+    _write_json_atomic(node_path, node)
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(json.dumps({"event": "start", "node": node["node_id"], "ts": node["started_at"], "config": config}) + "\n")
+    try:
+        if method in ("nsga_only", "fpa"):
+            if evaluation_budget < 80:
+                raise ValueError("NSGA-II evaluation budget must be at least the population size")
+            initial_rng = np.random.default_rng(seed)
+            initial_population = [
+                [float(initial_rng.uniform(0, 1)), float(initial_rng.uniform(0, 1)),
+                 float(initial_rng.uniform(3.57, 4)), float(initial_rng.uniform(0, .5))]
+                for _ in range(80)
+            ]
+            result = run_optimizer(seed, method == "fpa", 80, 20, 3, evaluation_budget,
+                                   initial_population=initial_population)
+        elif method == "random_search":
+            result = run_random_search(seed, evaluation_budget)
+        elif method == "1d_random_search":
+            result = run_1d_random_search(seed, evaluation_budget)
+        elif method == "random_permutation_reference":
+            result = run_random_permutation_reference(seed, evaluation_budget)
+        else:
+            raise ValueError(f"unknown run method: {method}")
+        if result.get("evaluation_count") != evaluation_budget:
+            raise ValueError(f"expected {evaluation_budget} objective calls, got {result.get('evaluation_count')}")
+        result.update({"run_protocol_hash": protocol_hash, "run_config_hash": config_hash,
+                       "simulator_hash": source_hash, "source_revision": source_hash})
+        _write_json_atomic(result_path, result)
+        validate_run_artifact(result_path, protocol_hash, source_hash, evaluation_budget, int(seed),
+                              "random_permutation_reference" if method == "random_permutation_reference" else method)
+        node.update({"status": "complete", "finished_at": time.time(), "exit_status": 0,
+                     "evaluation_count": result.get("evaluation_count", result.get("permutation_count")),
+                     "output_sha256": {"result": _file_sha256(result_path), "log": _file_sha256(log_path)}})
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"event": "complete", "ts": node["finished_at"],
+                                  "evaluation_count": node["evaluation_count"],
+                                  "elapsed_seconds": node["finished_at"]-node["started_at"]}) + "\n")
+        _write_json_atomic(node_path, node)
+        return node
+    except Exception as error:
+        if result_path.exists():
+            result_path.unlink()
+        node.update({"status": "failed", "finished_at": time.time(), "exit_status": 1,
+                     "error": f"{type(error).__name__}: {error}"})
+        with log_path.open("a", encoding="utf-8") as log:
+            log.write(json.dumps({"event": "failed", "ts": node["finished_at"], "error": node["error"]}) + "\n")
+        _write_json_atomic(node_path, node)
+        raise
+
+
+def validate_run_artifact(path, protocol_hash, simulator_hash, evaluation_budget, seed, method):
+    """Validate provenance and metric ranges for one completed run artifact."""
+    result = json.loads(Path(path).read_text(encoding="utf-8"))
+    required = {"run_protocol_hash", "run_config_hash", "simulator_hash", "evaluation_count",
+                "metric_definition", "seed", "variant"}
+    if method != "random_permutation_reference":
+        required |= {"selected", "objective_values"}
+    else:
+        required.add("metrics")
+    missing = required - set(result)
+    if missing:
+        raise ValueError(f"run artifact missing fields: {sorted(missing)}")
+    if result["run_protocol_hash"] != protocol_hash or result["simulator_hash"] != simulator_hash:
+        raise ValueError("run artifact provenance hash mismatch")
+    if result["evaluation_count"] != evaluation_budget or result["seed"] != seed:
+        raise ValueError("run artifact evaluation count or seed mismatch")
+    if result["variant"] != method or result["metric_definition"] != "vectorial_nonlinearity_min_over_255_nonzero_output_masks":
+        raise ValueError("run artifact method or metric definition mismatch")
+    if method == "random_permutation_reference":
+        if result.get("permutation_count") != evaluation_budget or len(result["metrics"]) != evaluation_budget:
+            raise ValueError("random-permutation sample count mismatch")
+        for metrics in result["metrics"]:
+            if not 0 <= metrics["nl_min"] <= 128 or not 2 <= metrics["du"] <= 256:
+                raise ValueError("random-permutation artifact contains out-of-domain metrics")
+    else:
+        if not np.isfinite(result["selected"]["le"]) or not 0 <= result["selected"]["nl_min"] <= 128 or not 2 <= result["selected"]["du"] <= 256:
+            raise ValueError("run artifact contains out-of-domain selected metrics")
+    if result.get("hypervolume") is not None and (not np.isfinite(result["hypervolume"]) or result["hypervolume"] < 0):
+        raise ValueError("run artifact hypervolume is invalid")
+    return result
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def run_random_search(seed, budget):
+    """Uniform random search over valid 2D-map parameters with exact call budget."""
+    if budget < 1:
+        raise ValueError("budget must be positive")
+    rng = np.random.default_rng(seed)
+    config = {"seed": int(seed), "variant": "random_search", "evaluation_budget": int(budget),
+              "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks",
+              "objective_keys": list(objective_keys())}
+    evaluations = []
+    for _ in range(budget):
+        candidate = [float(rng.uniform(0, 1)), float(rng.uniform(0, 1)),
+                     float(rng.uniform(3.57, 4)), float(rng.uniform(0, .5))]
+        evaluations.append(evaluate_chromosome(candidate))
+    return _build_run_result(evaluations, "random_search", seed, config, len(evaluations))
+
+
+def run_1d_random_search(seed, budget):
+    """Uniform parameter search for the x-only 1D map with exact call budget."""
+    if budget < 1:
+        raise ValueError("budget must be positive")
+    rng = np.random.default_rng(seed)
+    config = {"seed": int(seed), "variant": "1d_random_search", "evaluation_budget": int(budget),
+              "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks",
+              "objective_keys": list(objective_keys()), "map_dimension": 1}
+    evaluations = []
+    for _ in range(budget):
+        candidate = _evaluate_1d_candidate(float(rng.uniform(0, 1)), float(rng.uniform(3.57, 4)))
+        evaluations.append(candidate)
+    return _build_run_result(evaluations, "1d_random_search", seed, config, len(evaluations))
+
+
+def run_random_permutation_reference(seed, count):
+    """Generate a descriptive seed-stable metric distribution over uniform permutations."""
+    if count < 1:
+        raise ValueError("count must be positive")
+    records = []
+    for index, sbox in enumerate(random_permutation_sample(seed, count)):
+        metrics = {"nl_min": vectorial_nonlinearity(sbox), "nl_avg": coordinate_nonlinearity(sbox)[1],
+                   "du": differential_uniformity(sbox), "sac": sac(sbox), "bic_sac": bic_sac(sbox),
+                   "lap": lap(sbox), "sbox": sbox.tolist()}
+        records.append({"seed": int(seed), "sample_index": index, **metrics})
+    return {"seed": int(seed), "permutation_count": int(count), "evaluation_count": int(count),
+            "hypervolume": None, "variant": "random_permutation_reference",
+            "metric_definition": "vectorial_nonlinearity_min_over_255_nonzero_output_masks", "metrics": records}
 
 
 def evaluate_chromosome(chrom, include_cipher_metrics=False):
@@ -397,7 +957,8 @@ def evaluate_chromosome(chrom, include_cipher_metrics=False):
     x0, y0 = initial_state(x_gene, y_gene)
     sbox = map_to_sbox(x0, y0, mu, gamma)
     le = lyapunov_2d_logistic(x0, y0, mu, gamma, n=1500, transient=200)
-    nl_min, nl_avg = nonlinearity(sbox)
+    nl_min = vectorial_nonlinearity(sbox)
+    _, nl_avg = coordinate_nonlinearity(sbox)
     sac_v = sac(sbox)
     bic_s = bic_sac(sbox)
     du = differential_uniformity(sbox)
@@ -418,8 +979,8 @@ def evaluate_chromosome(chrom, include_cipher_metrics=False):
 
 
 def levy_flight(Lambda=1.5, size=4):
-    sigma_u = (np.math.gamma(1 + Lambda) * np.sin(np.pi * Lambda / 2) /
-               (np.math.gamma((1 + Lambda) / 2) * Lambda * 2 ** ((Lambda - 1) / 2))) ** (1 / Lambda)
+    sigma_u = (math.gamma(1 + Lambda) * np.sin(np.pi * Lambda / 2) /
+               (math.gamma((1 + Lambda) / 2) * Lambda * 2 ** ((Lambda - 1) / 2))) ** (1 / Lambda)
     u = np.random.normal(0, sigma_u, size=size)
     v = np.random.normal(0, 1, size=size)
     step = u / (np.abs(v) ** (1 / Lambda))
@@ -440,207 +1001,18 @@ def fpa_mutate(pop, idx, p_switch=0.8):
 
 
 # ---------------------------- Main run -----------------------------------
-def main(seed=SEED, fpa_enabled=True, pop_size=80, n_gen=20, fpa_interval=3, output_path="results.json", generate_figures=True):
-    """Run one optimizer trial with explicit random seed and FPA configuration."""
-    global SEED
-    SEED = int(seed)
-    np.random.seed(SEED)
-    POP_SIZE = int(pop_size)
-    N_GEN = int(n_gen)
-    FPA_INTERVAL = int(fpa_interval) if fpa_enabled else N_GEN + 1
-
-    init_pop = []
-    for _ in range(POP_SIZE):
-        chrom = [
-            float(np.random.uniform(0.0, 1.0)),
-            float(np.random.uniform(0.0, 1.0)),
-            float(np.random.uniform(3.57, 4.0)),
-            float(np.random.uniform(0.0, 0.5)),
-        ]
-        init_pop.append(evaluate_chromosome(chrom))
-    print(f"[init] evaluated {POP_SIZE} chromosomes")
-
-    history = []
-    for gen in range(N_GEN):
-        t0 = time.time()
-        fronts = fast_non_dominated_sort(init_pop)
-        ranks = [0] * len(init_pop)
-        cd = {}
-        for rank, front in enumerate(fronts):
-            for idx in front:
-                ranks[idx] = rank
-            cd.update(crowding_distance(init_pop, front))
-        best_le = max(p["le"] for p in init_pop)
-        best_nl = max(p["nl_min"] for p in init_pop)
-        best_du = min(p["du"] for p in init_pop)
-        history.append(dict(gen=gen, best_le=best_le, best_nl=best_nl, best_du=best_du))
-
-        # FPA step every FPA_INTERVAL generations
-        if gen % FPA_INTERVAL == FPA_INTERVAL - 1 and cd:
-            sorted_idx = sorted(fronts[0], key=lambda i: -cd[i])[:10]
-            for idx in sorted_idx:
-                new_chrom = fpa_mutate(init_pop, idx)
-                init_pop[idx] = evaluate_chromosome(new_chrom)
-
-        # Generate new population via tournament + crossover + mutation
-        new_pop = list(init_pop)
-        for _ in range(POP_SIZE // 2):
-            a1, a2 = np.random.choice(len(init_pop), 2, replace=False)
-            b1, b2 = np.random.choice(len(init_pop), 2, replace=False)
-            a = tournament_winner(a1, a2, ranks, cd)
-            b = tournament_winner(b1, b2, ranks, cd)
-            ca = [init_pop[a]["phase_x"], init_pop[a]["phase_y"], init_pop[a]["mu"], init_pop[a]["gamma"]]
-            cb = [init_pop[b]["phase_x"], init_pop[b]["phase_y"], init_pop[b]["mu"], init_pop[b]["gamma"]]
-            mask = np.random.random(4) > 0.5
-            child = [ca[i] if mask[i] else cb[i] for i in range(4)]
-            for k in range(4):
-                child[k] += np.random.normal(0, 0.01)
-            child = wrap_parameters(child)
-            new_pop.append(evaluate_chromosome(child))
-
-        # NSGA-II truncation
-        fronts2 = fast_non_dominated_sort(new_pop)
-        survivors = []
-        for f in fronts2:
-            if len(survivors) + len(f) <= POP_SIZE:
-                survivors.extend([new_pop[i] for i in f])
-            else:
-                cd2 = crowding_distance(new_pop, f)
-                f_sorted = sorted(f, key=lambda i: -cd2.get(i, 0))
-                survivors.extend([new_pop[i] for i in f_sorted[:POP_SIZE - len(survivors)]])
-                break
-        init_pop = survivors
-        print(f"[gen {gen+1}/{N_GEN}] best_le={best_le:.4f} best_nl={best_nl} best_du={best_du} ({time.time()-t0:.1f}s)")
-
-    # Select a compromise by normalized Euclidean distance to the ideal point.
-    fronts_final = fast_non_dominated_sort(init_pop)
-    pareto = [init_pop[i] for i in fronts_final[0]]
-    best_idx = select_knee(pareto)
-    selected = pareto[best_idx]
-    print("\n[selected]")
-    for k, v in selected.items():
-        if k != "sbox":
-            print(f"  {k}: {v}")
-
-    # Save Pareto front (without sbox to keep JSON small)
-    pareto_no_sbox = []
-    for p in pareto:
-        p2 = {k: v for k, v in p.items() if k != "sbox"}
-        pareto_no_sbox.append(p2)
-
-    out = dict(
-        provenance=dict(simulated=True, seed=SEED, fpa_enabled=bool(fpa_enabled),
-                        notes="All numbers produced by this simulator with the recorded seed."),
-        selected={k: v for k, v in selected.items() if k != "sbox"},
-        sbox=selected["sbox"],
-        pareto_size=len(pareto),
-        pareto=pareto_no_sbox,
-        history=history,
-        pop_size=POP_SIZE, n_gen=N_GEN, fpa_interval=FPA_INTERVAL,
-    )
-    Path(output_path).write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
-    print(f"Wrote {output_path}")
-    if not generate_figures:
-        return
-
-    # ---------- Figures ----------
-    # Figure 2: attractor
-    x_att, y_att = iterate_2d_logistic(0.31, 0.78, 3.91, 0.21, n=5000, transient=500)
-    fig, ax = plt.subplots(figsize=(3.4, 2.4))
-    ax.scatter(x_att[::5], y_att[::5], s=0.3, c=WONG[5], alpha=0.5)
-    ax.set_xlabel(r"$x_n$")
-    ax.set_ylabel(r"$y_n$")
-    ax.set_title("2D Logistic attractor ($\\mu=3.91$, $\\gamma=0.21$)")
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_02_attractor.pdf")
-    plt.close(fig)
-
-    # Figure 3: Pareto front
-    fig, ax = plt.subplots(figsize=(3.6, 2.8))
-    le_v = [p["le"] for p in pareto]
-    nl_v = [p["nl_min"] for p in pareto]
-    du_v = [p["du"] for p in pareto]
-    sc = ax.scatter(le_v, nl_v, c=du_v, cmap="viridis", s=30, edgecolor="black", linewidth=0.4)
-    ax.scatter([selected["le"]], [selected["nl_min"]], c="red", marker="*", s=80,
-               label="selected", zorder=10)
-    ax.set_xlabel(r"Lyapunov exponent $\lambda_\mathrm{max}$")
-    ax.set_ylabel(r"Min nonlinearity (NL)")
-    fig.colorbar(sc, ax=ax, shrink=0.8, label="Differential uniformity (DU)")
-    # Place legend below the x-axis label, outside the axes, to avoid overlapping data
-    ax.legend(frameon=False, loc="upper center",
-              bbox_to_anchor=(0.5, -0.22), ncol=1)
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_03_pareto.pdf")
-    plt.close(fig)
-
-    # Figure 4: S-box heatmap
-    sbox_arr = np.array(selected["sbox"]).reshape(16, 16)
-    fig, ax = plt.subplots(figsize=(3.4, 2.6))
-    im = ax.imshow(sbox_arr, cmap="viridis", aspect="equal")
-    ax.set_xlabel("output high nibble")
-    ax.set_ylabel("output low nibble")
-    ax.set_title("Selected dynamic S-box")
-    fig.colorbar(im, ax=ax, shrink=0.8, label="S(x)")
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_04_sbox.pdf")
-    plt.close(fig)
-
-    # Figure 5: SAC matrix + per-bit avalanche
-    A = sac_matrix(np.array(selected["sbox"]))
-    fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.6))
-    im0 = axes[0].imshow(A, cmap="RdYlGn", vmin=0.3, vmax=0.7, aspect="equal")
-    axes[0].set_xlabel("output bit")
-    axes[0].set_ylabel("input bit")
-    axes[0].set_title("SAC matrix")
-    fig.colorbar(im0, ax=axes[0], shrink=0.8)
-    axes[1].bar(range(8), A.mean(axis=0), color=WONG[5])
-    axes[1].axhline(0.5, color=WONG[6], linestyle="--", linewidth=0.8, label="ideal = 0.5")
-    axes[1].set_xlabel("output bit")
-    axes[1].set_ylabel("mean avalanche prob.")
-    axes[1].set_ylim(0.3, 0.7)
-    axes[1].legend(frameon=False)
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_05_sac.pdf")
-    plt.close(fig)
-
-    # Figure 6: DDT heatmap (log scale)
-    sb = np.array(selected["sbox"])
-    ddt = np.zeros((256, 256), dtype=np.int32)
-    for dx in range(256):
-        dy = sb ^ sb[_X ^ dx]
-        ddt[dx] = np.bincount(dy, minlength=256)
-    ddt[0, 0] = 0
-    fig, ax = plt.subplots(figsize=(3.4, 2.6))
-    im = ax.imshow(np.log1p(ddt), cmap="inferno", aspect="equal")
-    ax.set_xlabel(r"output diff $\Delta y$")
-    ax.set_ylabel(r"input diff $\Delta x$")
-    ax.set_title("DDT (log1p scale)")
-    fig.colorbar(im, ax=ax, shrink=0.8, label="log(1+count)")
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_06_ddt.pdf")
-    plt.close(fig)
-
-    # Figure 7: convergence
-    fig, ax = plt.subplots(figsize=(3.6, 2.8))
-    gens = [h["gen"] for h in history]
-    ax.plot(gens, [h["best_le"] for h in history], color=WONG[5], marker="o",
-            label="best LE")
-    ax.plot(gens, [h["best_nl"]/120 for h in history], color=WONG[6], marker="s",
-            label="best NL / 120")
-    ax.plot(gens, [(16-h["best_du"])/16 for h in history], color=WONG[3], marker="^",
-            label="(16-best DU) / 16")
-    ax.set_xlabel("Generation")
-    ax.set_ylabel("Normalized metric (higher better)")
-    # Place legend below the x-axis label, outside the axes, to avoid overlapping curves
-    ax.legend(frameon=False, loc="upper center",
-              bbox_to_anchor=(0.5, -0.22), ncol=3)
-    ax.set_title("NSGA-II-FPA convergence")
-    fig.tight_layout(pad=0.4)
-    fig.savefig(FIG_DIR / "fig_07_convergence.pdf")
-    plt.close(fig)
-
-    print("Saved six single-run figures (fig_02 .. fig_07). Use plot_verified_ablation.py for the paired-seed Figure 8.")
-
+def main(seed=SEED, fpa_enabled=True, pop_size=80, n_gen=20, fpa_interval=3, output_path="results.json", generate_figures=True, evaluation_budget=None):
+    """Run one reproducible optimizer trial and optionally render its figures."""
+    if evaluation_budget is None:
+        evaluation_budget = pop_size + n_gen * (pop_size // 2)
+        if fpa_enabled and fpa_interval > 0:
+            evaluation_budget += (n_gen // fpa_interval) * min(10, pop_size)
+    run = run_optimizer(seed, fpa_enabled, pop_size, n_gen, fpa_interval, evaluation_budget)
+    Path(output_path).write_text(json.dumps(run, indent=2, default=str), encoding="utf-8")
+    print(f"Wrote {output_path} (variant={run['variant']}, evaluations={run['evaluation_count']})")
+    if generate_figures:
+        warnings.warn("figure regeneration is deferred until the result bundle is frozen", RuntimeWarning)
+    return run
 
 def cli_main():
     parser = argparse.ArgumentParser(description="Run the S-box optimizer.")

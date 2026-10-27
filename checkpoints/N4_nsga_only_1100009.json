@@ -1,0 +1,29 @@
+{
+  "node_id": "N4:nsga_only:1100009",
+  "status": "complete",
+  "inputs": {
+    "method": "nsga_only",
+    "seed": 1100009,
+    "evaluation_budget": 940,
+    "protocol_hash": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator_hash": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "input_sha256": {
+    "protocol": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "outputs": [
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\results\\seed_nsga_only_1100009.json",
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\logs\\seed_nsga_only_1100009.jsonl"
+  ],
+  "output_sha256": {
+    "result": "73a98a2027f7fe25f9424d34edbc54e5817542b3e9e8da0409d0eaecc31e3f27",
+    "log": "fa98203d4cc73c0188521fb812946dd6a0ff1242af9bba73afb8fc4748c0f693"
+  },
+  "started_at": 1792482059.2981198,
+  "finished_at": 1792482109.7274933,
+  "command": "execute_run_node",
+  "evaluation_count": 940,
+  "exit_status": 0,
+  "retry": 0
+}

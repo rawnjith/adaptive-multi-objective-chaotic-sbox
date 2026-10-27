@@ -1,0 +1,29 @@
+{
+  "node_id": "N4:fpa:1150003",
+  "status": "complete",
+  "inputs": {
+    "method": "fpa",
+    "seed": 1150003,
+    "evaluation_budget": 940,
+    "protocol_hash": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator_hash": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "input_sha256": {
+    "protocol": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+    "simulator": "04775ce3631504457859ed6a8ec0a79e837406785899b4ee62239f31469683cf"
+  },
+  "outputs": [
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\results\\seed_fpa_1150003.json",
+    "output\\sbox-revision\\2026-10-19-inventory-01\\run-v3\\logs\\seed_fpa_1150003.jsonl"
+  ],
+  "output_sha256": {
+    "result": "f7a10863a4dd23c4cae9b15f805750c5669d1892d6b71fc14b59fbe4a344e6f5",
+    "log": "c1c4f820227e42234e07dc6f07c26048946a8c71499564a88efe4b9ea35c5397"
+  },
+  "started_at": 1792482301.4072986,
+  "finished_at": 1792482350.2107697,
+  "command": "execute_run_node",
+  "evaluation_count": 940,
+  "exit_status": 0,
+  "retry": 0
+}

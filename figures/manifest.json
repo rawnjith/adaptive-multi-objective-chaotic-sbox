@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "generated_from": "analysis/results_summary.json",
+  "results_summary_sha256": "38071c194125912453ebfee4ec192dd1b22bc50c182cbd36cd5dd8823918b58c",
+  "analysis_script_sha256": "9439411000ea9a9300b6e29531148b2a5574473755d658ab65df1b0aa2f8cc5e",
+  "figure_script_sha256": "f952ff25bdf9ebe957945720329491a21e473b48aa7fa918c7ddda022b2556ce",
+  "protocol_sha256": "662824ab0364f19f9f7e61ca7ddd69ad568780dbd38e5305786b4625a4e8d551",
+  "run_grid_sha256": "d7989b1eb5368cf972f6fe38e9de9067b2b1c250671fbfb51bf2e3b3ce617d0e",
+  "figures": [
+    {
+      "path": "figures\\figure-01-objective-comparison.pdf",
+      "sha256": "be6b3b0c8120e74e0fbbbfaf5d9dd1d39d8433789938bbb0fe188f4494ac46db",
+      "bytes": 30090
+    },
+    {
+      "path": "figures\\figure-02-paired-hypervolume.pdf",
+      "sha256": "70501ad68d9c5a53977ce871db0a9e9c774ab5f9da4bf446fa3bfaa21ff2990b",
+      "bytes": 24864
+    },
+    {
+      "path": "figures\\figure-03-random-permutation-reference.pdf",
+      "sha256": "665047e61d5da1f7542b3584e1ed9a2e19ddee1a40179eabe731705abb0aaacf",
+      "bytes": 30229
+    },
+    {
+      "path": "figures\\figure-01-objective-comparison.svg",
+      "sha256": "f1fd34f3d9088acb46948eeba4a7f03bf380bb810519540cb2710542f30d0149",
+      "bytes": 123709
+    },
+    {
+      "path": "figures\\figure-02-paired-hypervolume.svg",
+      "sha256": "e289ddea44f97772e970f1bd245da1b739a8a5c38b35fbe757941836d8d41cc4",
+      "bytes": 65437
+    },
+    {
+      "path": "figures\\figure-03-random-permutation-reference.svg",
+      "sha256": "1a2c71f280d1cb4ddc2f8d4cbb3ad30fa9e2ebefa13f46f763b4472eb6a2714c",
+      "bytes": 134426
+    }
+  ]
+}
